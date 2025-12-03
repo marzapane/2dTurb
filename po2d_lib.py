@@ -3,10 +3,10 @@ import numpy.fft as ft
 import numpy.linalg as la
 import scipy.special as sp
 import matplotlib.pyplot as plt
-# from functools import cache
+from functools import cache
 from tqdm import tqdm
 from matplotlib import cm
-from matplotlib.colors import SymLogNorm
+from matplotlib.colors import SymLogNorm, Normalize
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from scipy.stats import binned_statistic
 from scipy.ndimage import gaussian_filter
@@ -20,7 +20,8 @@ class FluidSimulator:
     gamma = np.array((8/15, 5/12, 3/4))
     rho = np.array((0, -17/60, -5/12))
     alpha = gamma + rho
-    L = [None, None, None]
+    # L = [None, None, None]
+    eigs_M2 = [None, None, None]
 
     def __init__(
         self,
@@ -39,6 +40,7 @@ class FluidSimulator:
 
 
     def initialize_run_state(self):
+        """Initializes folders, checks for previous simulations, and sets up time/logging."""
         self.diagnostics = True
         print(f'Running simulation "{self.cfg_name}"')
         self.frames_dir, self.bak_dir = self.setup_folders() # looking for past simulations backup files
@@ -47,7 +49,7 @@ class FluidSimulator:
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
         if self.reload_bak:
-            self.time = np.load(self.bak_dir / self.bak_file)['t']
+            self.time = float(np.load(self.bak_dir / self.bak_file)['t'])
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'a')
         else:
             self.t0 = 0
@@ -94,40 +96,47 @@ class FluidSimulator:
         if self.adapt_Dt:
             self.max_CFL = np.sqrt(3)  # for 3rd order Runge-Kutta
             self.cur_CFL = 1
-        if np.isfinite(self.Re):
-            revol_time = pow(self.sd_len**2/(2*self.eps), 1/3)
-        else:
-            revol_time = 4*np.pi / np.abs(fluid.vorticity()).mean()
-        self.T_print = 0
+        self.T_print = self.time
         if fluid.q.any():
-            self.dT_print = min(int(revol_time/self.Dt), int(self.T/5))
+            E = fluid.energy()
+            eps = fluid.energy_dissipation(self.Re)
+            # E_in = fluid.energy_input(self.F)
+            S = energy_spectrum(*fluid.velocity())
+            avg_k = np.average(np.arange(S.size), weights=S) if S.any() else 0.0
+            eddy_turnover = (2*np.pi/avg_k) / np.sqrt(2*E)
+            self.dT_print = min(10*eddy_turnover, self.T//5)
+            # revol_time = pow(self.sd_len**2/(2*eps), 1/3)
+            # self.dT_print = min(int(revol_time/self.Dt), self.T//5)
         else:
-            self.dT_print = int(self.T/5)
-        self.T_update = max(10, int(self.T/1000))
+            self.dT_print = self.T//5
+        self.T_update = 10
         # print(f'Simulation times are:\n  Dt = {self.Dt}\n  T_LE ~ {revol_time}')
         if self.silent:
             self.time_exec = np.arange(self.T+1)
         else:
             self.time_exec = tqdm(np.arange(self.T+1), dynamic_ncols=True)
-        self.F = self.forcing(self.N)
-        fluid.psi = fluid.streamfunction(0)
-        fluid.J = fluid.arakawa_jacobian(0)
-        
+        self.F = self.forcing(self.N, self.eps)
+        fluid.streamfunction()
+        fluid.arakawa_jacobian()
+
     def set_integration_const(self):
         self.c = self.Dt * self.alpha / (self.Re * self.Dx**2)
         self.d = self.Dt * self.alpha * self.ekman
+        n = np.arange(self.N)
         for i in range(3):
-            self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
+            eigs_M = (1 + self.c[i] + self.d[i]/2) - self.c[i]*np.cos(2*np.pi * n/self.N)
+            self.eigs_M2[i] = np.outer(eigs_M, eigs_M[:self.N//2 + 1])
+            # self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
 
-    @staticmethod
-    def linear_sys_inv(
-        c: float,   # Runge-kutta coefficients
-        d: float,
-        n: int,     # grid size
-    ):
-        M = (1 + c + d/2) * np.eye(n) - np.diag(c/2 * np.ones(n-1), 1) - np.diag(c/2 * np.ones(n-1), -1)
-        M[0, n-1] = M[n-1, 0] = -c/2
-        return la.inv(M)
+    # @staticmethod
+    # def linear_sys_inv(
+    #     c: float,   # Runge-kutta coefficients
+    #     d: float,
+    #     n: int,     # grid size
+    # ):
+    #     M = (1 + c + d/2) * np.eye(n) - np.diag(c/2 * np.ones(n-1), 1) - np.diag(c/2 * np.ones(n-1), -1)
+    #     M[0, n-1] = M[n-1, 0] = -c/2
+    #     return la.inv(M)
     
     def advance_dt(
         self,
@@ -135,23 +144,23 @@ class FluidSimulator:
         t: int,
     ):
         for step in range(3):
-            self.rungekutta_step(fluid, step, t)
+            self.rungekutta_step(fluid, step)
         self.time += self.Dt
         fluid.qsum20()
         if (t % self.T_update) == 0:
             E = fluid.energy()
             eps = fluid.energy_dissipation(self.Re)
+            # E_in = fluid.energy_input(self.F)
+            S = energy_spectrum(*fluid.velocity())
+            avg_k = np.average(np.arange(S.size), weights=S) if S.any() else 0.0
             if np.isfinite(self.Re):
                 revol_time = pow(self.sd_len**2/(2*eps), 1/3)
+                eddy_turnover = (2*np.pi/avg_k) / np.sqrt(2*E)
             else:
                 revol_time = 4*np.pi / np.abs(fluid.vorticity()).mean()
-            if fluid.q.any():
-                self.dT_print = min(int(revol_time/self.Dt), int(self.T/5))
-            else:
-                self.dT_print = int(self.T/5)
-            # E_in = fluid.energy_input(self.F)
-            S = energy_spectrum(*fluid.velocity(t))
-            avg_k = np.average(np.arange(S.size), weights=S) if S.any() else 0.0
+            # self.dT_print = min(int(revol_time/self.Dt), self.T//5)
+            seldom = max(200, 1600 * np.log10(self.T) - 4600) if (self.T < 1e6) else 5e3
+            self.dT_print = min(10*eddy_turnover, seldom*self.Dt)
             if self.silent:
                 print(f't = {self.time:.1f} | E = {E:.2g} | <k> = {avg_k:.2g} | eps = {eps:.2g}')
             else:
@@ -159,7 +168,7 @@ class FluidSimulator:
             if self.diagnostics:
                 print(self.time, E, eps, avg_k, fluid.enstrophy(), fluid.casimir(1), measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
             if self.adapt_Dt:
-                fluid.velocity(t)
+                fluid.velocity()
                 max_velocity = np.hypot(fluid.v_x, fluid.v_y).max()
                 line_Dt = (self.cur_CFL * self.Dx / max_velocity / 10) if (max_velocity > 0) else self.Dt
                 if np.isfinite(self.Re):
@@ -171,32 +180,57 @@ class FluidSimulator:
                     self.Dt = Dt
                     # print(f'    !!  v({t})<{max_velocity:.3g}  &  T_rev={revol_time:.1f}   ->   Dt = {self.Dt:.2g}')
                     self.set_integration_const()
-        if t >= self.T_print + self.dT_print:
-            self.T_print = t
+        if self.time >= self.T_print + self.dT_print:
+            self.T_print = self.time
             if self.diagnostics:
                 np.savez(self.bak_dir / f'q{(t+self.t0):07}', q=fluid.q, t=self.time)
             if self.plot_flag:
                 fig_path = self.frames_dir / f'{(t+self.t0):07}.png'
                 self.plotter.update(fluid.q, self.time, savepath=fig_path)
-                # fluid.plot_field(t, self, print_fig=self.diagnostics)
+                # fluid.plot_field(self, self.time, savepath=fig_path)
         if self.analize_vortex:
-            fluid.velocity(t)
+            fluid.velocity()
             self.bkgnd_sum = self.bkgnd_sum + fluid.avg_centered_field(self.bins) + (-fluid).avg_centered_field(self.bins)
+
+    # def rungekutta_step_nofft(
+    #     self,
+    #     fluid,
+    #     step: int,
+    # ):
+    #     F_p = self.F.copy()
+    #     self.F = self.forcing(self.N, self.eps)
+    #     J_p = fluid.J.copy()
+    #     fluid.arakawa_jacobian()
+    #     rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*fluid.dissipation()
+    #     Dq = np.matmul(np.matmul(self.L[step], rhs), self.L[step].transpose())
+    #     fluid.q += Dq
+    #     self.upd_psi = True
+    #     self.upd_J = True
+    #     self.upd_v = True
 
     def rungekutta_step(
         self,
         fluid,
         step: int,
-        t: int,
     ):
         F_p = self.F.copy()
-        self.F = self.forcing(self.N)
+        self.F = self.forcing(self.N, self.eps)
         J_p = fluid.J.copy()
-        fluid.arakawa_jacobian(t)
+        fluid.arakawa_jacobian()
         rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*fluid.dissipation()
-        Dq = np.matmul(np.matmul(self.L[step], rhs), self.L[step].transpose())
-        fluid.q += Dq
-        fluid.streamfunction(t)
+        fluid.q += self.inv_M_fft(rhs, step)
+        self.upd_psi = True
+        self.upd_J = True
+        self.upd_v = True
+    
+    def inv_M_fft(
+        self,
+        rhs,
+        i: int,
+    ):
+        rhs_ft = ft.rfft2(rhs)
+        inv_ft = ft.rfft2(rhs) / self.eigs_M2[i]
+        return ft.irfft2(inv_ft, s=rhs.shape)
 
     def conclude(self):
         if self.diagnostics and not self.stat_file.closed:
@@ -208,14 +242,15 @@ class FluidSimulator:
     
 
 class FluidState:
-    from po2d_config import N
-    from po2d_config import Dx
+    from po2d_config import N, Dx
 
     def __init__(
         self,
         simul = None,
         vorticity = None,
+        f_Coriolis = 0.,
     ):
+        self.f = f_Coriolis * np.ones((self.N, self.N))
         if simul is None:
             self.init_vorticity(vorticity)
         else:
@@ -230,11 +265,11 @@ class FluidState:
                     simul.plotter.update(self.q, 0.0, savepath=fig_path)
 
         self.psi = None
-        self.t_psi = None
+        self.upd_psi = True
         self.J = None
-        self.t_J = None
+        self.upd_J = True
         (self.v_x, self.v_y) = (None, None)
-        self.t_vel = None
+        self.upd_v = True
         
     def init_vorticity(
         self,
@@ -242,46 +277,44 @@ class FluidState:
     ):
         if vorticity is not None:
             if isinstance(vorticity, np.ndarray) and vorticity.shape == (self.N, self.N):
-                self.q = vorticity
+                self.q = vorticity + self.f
             else:
                 raise Exception("Error: wrong argument: q must be <numpy.ndarray> of shape (N, N).")
         else:
-            self.q = np.zeros((self.N, self.N))
+            self.q = self.f
 
     def streamfunction(
         self,
-        t: int,
     ):
-        if self.t_psi != t:
-            self.t_psi = t
-            self.psi = - inv_laplacian2d(self.q, self.Dx)
+        if self.upd_psi:
+            self.psi = - inv_laplacian2d(self.q - self.f, self.Dx)
+            self.upd_psi = False
         return self.psi
 
     def velocity(
         self,
-        t: int,
     ):
-        if self.t_vel != t:
-            self.t_vel = t
-            self.streamfunction(t)
+        if self.upd_v:
+            self.streamfunction()
             self.v_x = derivative(self.psi, 1, self.Dx)  # d(psi)/dy
             self.v_y = -derivative(self.psi, 0, self.Dx) # -d(psi)/dx
+            self.upd_v = False
         return self.v_x, self.v_y
     
     def vorticity(self):
-        return self.q
+        return self.q - self.f
 
     def dissipation(self):
         return pseudo_laplacian2d(self.vorticity())
 
     def energy(self):
-        return np.sum(self.q * self.psi / 2)
+        return integrate(self.q * self.streamfunction(), self.Dx) / 2
 
     def casimir(
         self,
         pow: int,
     ):
-        return np.power(self.q, pow).sum() / pow
+        return integrate(np.power(self.q, pow), self.Dx) / pow
 
     def enstrophy(self):
         return self.casimir(2)
@@ -290,14 +323,15 @@ class FluidState:
         self,
         Re: float,
     ):
-        velocity_gradient = self.q
-        return np.square(velocity_gradient).sum() / Re
+        (dudx, dvdx) = [derivative(v, 0, self.Dx) for v in self.velocity()]
+        (dudy, dvdy) = [derivative(v, 1, self.Dx) for v in self.velocity()]
+        return integrate((dudx**2 + dvdx**2 + dudy**2 + dvdy**2), self.Dx) / Re
 
     def energy_input(
         self,
         F: np.ndarray,
     ):
-        return np.sum(F * self.psi)
+        return integrate(F * self.streamfunction(), self.Dx)
     
     def avg_centered_field(
         self,
@@ -310,9 +344,9 @@ class FluidState:
         return avg_omega
 
     def find_vortex_center(self):
-        ctr = int(self.N/2)     # grid center
-        hr = int(self.N/16)     # half range of the interval considered
-        q_flt = gaussian_filter(self.q, sigma=256/25, truncate=2., mode='wrap') # gaussian convolution, to exclude large fluctuations
+        ctr = self.N//2     # grid center
+        hr = self.N//16     # half range of the interval considered
+        q_flt = gaussian_filter(self.q, sigma=self.N/25, truncate=2., mode='wrap') # gaussian convolution, to exclude large fluctuations
         (x_max, y_max) = np.unravel_index(q_flt.argmax(), q_flt.shape)
         max_ctr_v_x = np.roll(np.roll(self.v_x, ctr-x_max, axis=0), ctr-y_max, axis=1)  #bring the max in the position (N/2, N/2)
         max_ctr_v_y = np.roll(np.roll(self.v_y, ctr-x_max, axis=0), ctr-y_max, axis=1)
@@ -333,25 +367,23 @@ class FluidState:
 
     def plot_field(
         self,
-        t: int,
-        simul = None,
-        print_fig = True,
+        time = None,
+        savepath = None,
     ):
         lim = np.max(np.abs(self.q))
-        lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
-        log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
+        # lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
+        # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
-        col_map = cm.BrBG
+        col_map = cm.BrBG_r
         streamplt_col='purple'
         
         fig, ax = plt.subplots()
         (x, y) = coordinates(self.Dx, self.N)
-        contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=75)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
-        self.streamfunction(t)
-        self.velocity(t)
-        ax.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplt_col)
+        ax.streamplot(x.T, y.T, *(v.T for v in self.velocity()), color=streamplt_col)
         
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         labels = [r'$0$', r'$\pi/2$', r'$\pi$', r'$3\pi/2$', r'$2\pi$']
@@ -360,27 +392,25 @@ class FluidState:
         ax.set_xlim(0, (self.N-1) * self.Dx)
         ax.set_ylim(0, (self.N-1) * self.Dx)
         ax.set_aspect('equal')
-        if simul:
-            ax.set_title(f'Vorticity  $|$  t={simul.time:.3f}')
-        if print_fig and simul:
-            fig.savefig(simul.frames_dir / f'{(t+simul.t0):07}.png', dpi=200)
+        if time is not None:
+            ax.set_title(f'Potential Vorticity  $|$  t={time:.3f}')
+        if savepath is not None:
+            fig.savefig(savepath, dpi=200)
         else:
             plt.show()
         plt.close(fig)
 
     def arakawa_jacobian(
         self,
-        t: int,
     ):
-        if self.t_J != t:
-            self.t_J = t
+        if self.upd_J:
             # the neighbours of the i-th point are named by numbers according to the following order:
             #    y
             #    ^ 8 1 2
             #    | 7 i 3
             #    | 6 5 4
             #   -|------> x
-            # only the needed ones will be saved in memory
+            #
             q  = self.q
             q1 = np.roll(q,  -1, axis=1)
             q2 = np.roll(q1, -1, axis=0)
@@ -390,7 +420,7 @@ class FluidState:
             q6 = np.roll(q5, +1, axis=0)
             q7 = np.roll(q,  +1, axis=0)
             q8 = np.roll(q7, -1, axis=1)
-            p  = self.psi
+            p  = self.streamfunction()
             p1 = np.roll(p,  -1, axis=1)
             p2 = np.roll(p1, -1, axis=0)
             p3 = np.roll(p,  -1, axis=0)
@@ -407,10 +437,14 @@ class FluidState:
                       +(p5 - p7) * (q - q6)
                       +(p1 - p7) * (q8 - q)
                       +(p3 - p5) * (q - q4)) / (12 * self.Dx**2)
+            self.upd_J = False
         return self.J
     
     def qsum20(self):
         self.q -= self.q.sum()
+        self.upd_psi = True
+        self.upd_J = True
+        self.upd_v = True
 
     def __neg__(self):
         neg_self = self.__class__(vorticity = -self.q)
@@ -449,10 +483,8 @@ class FluidStateTopography(FluidState):
         topography: np.ndarray,
         simul = None,
         vorticity = None,
+        f_Coriolis = 0.,
     ):
-        super().__init__(simul, vorticity)
-        self.t_J2 = None
-
         if simul is None:
             self.init_topography(topography)
         else:
@@ -462,10 +494,14 @@ class FluidStateTopography(FluidState):
                 self.init_topography(topography)
                 if simul.diagnostics:
                     np.save(simul.bak_dir / 'topography.npy', self.topo)
-        self.h = 1 - 2/3 * self.topo/self.topo.max()
+        # self.h = 1 - 2/3 * self.topo/self.topo.max()
+        self.h = 1 - self.topo/np.abs(self.topo).max() / 100.
         # gradient terms computed along diagonals, divided by h (non-linear term in q[psi])
         self.Hmd = (np.roll(np.roll(self.h, -1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, +1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
         self.Hsd = (np.roll(np.roll(self.h, +1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, -1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
+
+        super().__init__(simul, vorticity, f_Coriolis)
+        self.q /= self.h
 
     def init_topography(
         self,
@@ -478,88 +514,72 @@ class FluidStateTopography(FluidState):
 
     def streamfunction(
         self,
-        t: int,
     ):
-        if self.t_psi != t:
-            self.t_psi = t
-            Qh2 = self.q * np.square(self.h)
-            if t == 0:
-                self.psi = - inv_laplacian2d(Qh2, self.Dx)
+        if self.upd_psi:
             n_iter = 0
             tol = 1e-15
             err = 1.
+            zh = (self.q*self.h - self.f) * self.h
+            if self.psi is None:
+                self.psi = -inv_laplacian2d(zh, self.Dx)
+            psi_p = np.empty_like(self.psi)
             while err > tol:
                 n_iter += 1
-                psi_p = self.psi.copy()
+                np.copyto(psi_p, self.psi) # memory-safe version of `psi_p = self.psi`
                 Hpsi = self.Hmd * (np.roll(np.roll(self.psi, -1, axis=0), -1, axis=1) - np.roll(np.roll(self.psi, +1, axis=0), +1, axis=1)) + self.Hsd * (np.roll(np.roll(self.psi, +1, axis=0), -1, axis=1) - np.roll(np.roll(self.psi, -1, axis=0), +1, axis=1))
-                np.copyto(self.psi, inv_laplacian2d(Hpsi - Qh2, self.Dx)) # memory-safe version of self.psi=[...]
+                np.copyto(self.psi, inv_laplacian2d(Hpsi - zh, self.Dx))
                 err = np.abs(self.psi - psi_p).max() / (np.abs(self.psi).max() + 1e-9)
             if n_iter > 30: print(f'{n_iter} iterations were required.')
+            self.upd_psi = False
         return self.psi
 
     def velocity(
         self,
-        t: int,
     ):
-        if self.t_vel != t:
-            self.t_vel = t
-            self.streamfunction(t)
+        if self.upd_v:
+            self.streamfunction()
             self.v_x = derivative(self.psi, 1, self.Dx) / self.h  # d(psi)/dy / h
             self.v_y = -derivative(self.psi, 0, self.Dx) / self.h # -d(psi)/dx / h
+            self.upd_v = False
         return self.v_x, self.v_y
 
     def vorticity(self):
-        return self.q * self.h
+        return self.q*self.h - self.f
 
     def dissipation(self):
         return pseudo_laplacian2d(self.vorticity()) / self.h
 
     def energy(self):
-        return np.sum(self.q * self.psi * self.h / 2)
-        # self.velocity(t)
-        # return np.sum((np.square(self.v_x)+np.square(self.v_y)) * self.h / 2)
+        return integrate(self.q * self.streamfunction() * self.h, self.Dx) / 2
+        # self.velocity()
+        # return integrate((self.v_x**2 + self.v_y**2) * self.h, self.Dx) / 2
 
     def casimir(
         self,
         pow: int,
     ):
-        return (np.power(self.q, pow) * self.h).sum() / pow
-
-    def energy_dissipation(
-        self,
-        Re: float,
-    ):
-        velocity_gradient = self.q * self.h
-        return np.square(velocity_gradient).sum() / Re
-
-    def energy_input(
-        self,
-        F: np.ndarray,
-    ):
-        return np.sum(F * self.psi)
+        return integrate(np.power(self.q, pow) * self.h, self.Dx) / pow
     
     def plot_field(
         self,
-        t: int,
-        simul = None,
-        print_fig = True,
+        time = None,
+        savepath = None,
     ):
-        lim = np.max(np.abs(self.q))
-        lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
-        log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
+        # lim = np.max(np.abs(self.q))
+        # lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
+        # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
-        col_map = cm.BrBG
+        col_map = cm.BrBG_r
         streamplt_col='purple'
         
         fig, ax = plt.subplots()
         (x, y) = coordinates(self.Dx, self.N)
         ax.contour(x.T, y.T, self.topo.T, colors='black', alpha=0.75)
-        contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=75)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
-        self.streamfunction(t)
-        self.velocity(t)
-        ax.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplt_col)
+        ax.streamplot(x.T, y.T, *(v.T for v in self.velocity()), color=streamplt_col)
         
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         labels = [r'$0$', r'$\pi/2$', r'$\pi$', r'$3\pi/2$', r'$2\pi$']
@@ -568,25 +588,31 @@ class FluidStateTopography(FluidState):
         ax.set_xlim(0, (self.N-1) * self.Dx)
         ax.set_ylim(0, (self.N-1) * self.Dx)
         ax.set_aspect('equal')
-        if simul:
-            ax.set_title(f'Vorticity  $|$  t={simul.time:.3f}')
-        if print_fig and simul:
-            fig.savefig(simul.frames_dir / f'{(t+simul.t0):06}.png', dpi=200)
+        if time is not None:
+            ax.set_title(f'Potential Vorticity  $|$  t={time:.3f}')
+        if savepath is not None:
+            fig.savefig(savepath, dpi=200)
         else:
             plt.show()
         plt.close(fig)
         
     def arakawa_jacobian(
         self,
-        t: int,
     ):
-        if self.t_J2 != t:
-            self.t_J2 = t
-            self.J = super().arakawa_jacobian(t) / self.h
+        if self.upd_J:
+            # 1. Call base arakawa_jacobian, which:
+            #    - computes the base value
+            #    - sets upd_J to False
+            super().arakawa_jacobian()
+            # 2. Overwrite the base Jacobian with the topographic one
+            self.J /= self.h
         return self.J
     
     def qsum20(self):
-        self.q -= self.vorticity().sum()/self.h.sum()
+        self.q -= self.vorticity().sum() / self.h.sum()
+        self.upd_psi = True
+        self.upd_J = True
+        self.upd_v = True
 
     def __neg__(self):
         neg_self = self.__class__(vorticity = -self.q, topography=self.topo)
@@ -622,7 +648,7 @@ class VorticityPlotter:
         self,
         Dx: float,  # grid spacing
         n: int,     # grid size
-        cmap = cm.BrBG):
+        cmap = cm.BrBG_r):
         self.cmap = cmap
 
         self.fig, self.ax = plt.subplots()
@@ -641,28 +667,30 @@ class VorticityPlotter:
             origin='lower',
             extent=(0, (n-1)*Dx, 0, (n-1)*Dx),
             cmap=self.cmap,
-            norm=SymLogNorm(linthresh=1e-3, vmin=-1.0, vmax=1.0),
+            # norm=SymLogNorm(linthresh=1e-3, vmin=-1.0, vmax=1.0),
+            vmin=-1.0, vmax=1.0,
             interpolation='nearest',
         )
         self.cbar = self.fig.colorbar(self.im, ax=self.ax)
-        self.title_obj = self.ax.set_title("Vorticity | t=0.000")
+        self.title_obj = self.ax.set_title("Potential Vorticity | t=0.000")
 
     def update(self,
-        q,
-        t: float,
-        savepath=None,
-        upd_clim=True):
+            q,
+            time: float,
+            savepath = None,
+            upd_clim = True
+        ):
         """Update image data in place and save off-screen frame."""
         self.im.set_data(q.T)
 
         if upd_clim and (np.count_nonzero(q) > 0):
-            lim = float(np.max(np.abs(q)))
-            lin_thresh = np.power(10.,np.floor(np.log10(lim/10)))
-            self.im.set_norm(SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim))
-            self.cbar.update_normal(self.im)
+            # lim = float(np.max(np.abs(q)))
+            # lin_thresh = np.power(10.,np.floor(np.log10(lim/10)))
+            # self.im.set_norm(SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim))
+            self.im.set_norm(Normalize(vmin=q.min(), vmax=q.max()))
             self.cbar.update_normal(self.im)
 
-        self.title_obj.set_text(f"Vorticity | t={t:.3f}")
+        self.title_obj.set_text(f"Potential Vorticity | t={time:.3f}")
 
         if savepath is not None:
             self.fig.savefig(savepath, dpi=200)
@@ -676,58 +704,61 @@ class VorticityPlotter:
         plt.close(self.fig)
 
 
-
 def energy_spectrum(
-    v_x: np.ndarray,
-    v_y: np.ndarray,
+    vx: np.ndarray,
+    vy: np.ndarray,
 ):
-    n = v_x.shape[0]
-    vt_square = np.abs(ft.rfft2(v_x))**2 + np.abs(ft.rfft2(v_y))**2
-    k = modulus_k(n)
-    k_range = np.floor((int(n/2) + 1) * np.sqrt(2))
-    spectrum, _, _ = binned_statistic(k.flatten(), vt_square.flatten(), statistic='mean', bins=np.arange(k_range+1))
-    return 2*np.pi * np.arange(k_range) * spectrum
+    n = vx.shape[0]
+    mod_k = modulus_k(n)
+    k_max = np.ceil(np.max(mod_k))
+    vx_fft = ft.rfft2(vx, norm='ortho') / n
+    vy_fft = ft.rfft2(vy, norm='ortho') / n
+    E_k = (np.abs(vx_fft)**2 + np.abs(vy_fft)**2) / 2
+    E_k[:, 1:-1] *= 2
+    spectrum, _, _ = binned_statistic(mod_k.flatten(), E_k.flatten(), statistic='mean', bins=np.arange(k_max+1))
+    return (2*np.pi)**3 * np.arange(k_max) * spectrum
 
 
 def random_forcing(
     n: int,     # grid size
+    trg_eps = 1.,
 ):
-    strength = 1e+5
-    k_F = n * 25/128
-    # k_F = n / 8
-    power_spectrum = forcing_spectrum(strength, k_F, n)
-    random_phase = np.random.rand(n, int(n/2)+1)
+    k_F = 50. if n > 256 else 25.
+    power_spectrum = vorticity_forcing_spectrum(trg_eps, k_F, n)
+    random_phase = np.random.rand(n, n//2+1)
     F_ft = power_spectrum * np.exp(2j*np.pi * random_phase)
-    return ft.irfft2(F_ft)
+    return ft.irfft2(F_ft, norm='ortho', s=(n,n)) * n/(2*np.pi)
 
 
-# @cache
-def forcing_spectrum(
+@cache
+def vorticity_forcing_spectrum(
     strength: float,
     k_F: float,
     n: int,     # grid size
 ):
-    band_size = 3.  # band_size = 2
+    band_size = 3.
     band_max = k_F + band_size/2.
     band_min = k_F - band_size/2.
     k = modulus_k(n)
-    f = strength * np.logical_and(band_min < k, k < band_max)
-    return np.sqrt(k * f / np.pi)
+    f2 = 2*strength * np.logical_and(band_min < k, k < band_max) / (2*np.pi * band_size)
+    f2[:, 1:-1] /= 2
+    return np.sqrt(k * f2)
 
 
-# @cache
+@cache
 def modulus_k(
     n: int,     # grid size
 ):
-    square_sum = np.square(np.arange(n))[:, None] + np.square(np.arange(int(n/2)+1))[None, :]
-    mod_k = np.sqrt(square_sum)
-    mod_k[int(n/2)+1:n, :] = -mod_k[n-int(n/2)-1:0:-1, :]
-    return mod_k
+    kx = np.arange(n)
+    kx[n//2+1:n] = kx[n-n//2-1:0:-1]
+    ky = np.arange(n//2+1)
+    return np.sqrt(kx[:,None]**2+ky[None,:]**2)
 
 
-# @cache
+@cache
 def zero_forcing(
     n: int,     # grid size
+    trg_eps = None,
 ):
     return np.zeros((n, n))
 
@@ -737,7 +768,7 @@ def gauss_topography(
     n: int,     # grid size
     sigma = None,  # mount width
 ):
-    ctr = int(n-1)/2 * Dx
+    ctr = (n-1)//2 * Dx
     if sigma is None:
         sigma = 2*np.pi / 10
     dist, _ = relative_pos(ctr, ctr, Dx, n)
@@ -766,8 +797,8 @@ def random_topography(
     topo = np.zeros((n, n))
     for i in range(peaks):
         sign = [-1, 1][np.random.randint(2)]
-        height = np.random.rand()
-        fatness = 2 * height * (1.5 * np.random.rand() + 0.25)
+        height = np.exp(np.random.rand()-1)
+        fatness = 1.3* height * (1.5 * np.random.rand() + 0.25)
         ctr = 2*np.pi * np.random.rand(2)
         dist, _ = relative_pos(*ctr, Dx, n)
         topo += sign * height * np.exp(-(dist/fatness)**2)
@@ -863,10 +894,10 @@ def inv_laplacian2d(
 ):
     omega_ft = ft.rfft2(omega)
     psi_ft = omega_ft / laplacian_eig(omega_ft.shape, Dx)
-    return ft.irfft2(psi_ft)
+    return ft.irfft2(psi_ft, s=omega.shape)
 
 
-# @cache
+@cache
 def laplacian_eig(
     shape: tuple,
     Dx: float,  # grid spacing
@@ -895,7 +926,7 @@ def autocorrelation(
     f: np.ndarray,  # field
 ):
     f_T = ft.rfft2(f)
-    return ft.irfft2(f_T * f_T.conjugate())
+    return ft.irfft2(f_T * f_T.conjugate(), s=f.shape)
     
 
 def pbc_dist(
@@ -906,11 +937,11 @@ def pbc_dist(
 
 
 def measure_valley_dist(
-    t: np.ndarray,  # topography
+    topo: np.ndarray,  # topography
     n: int,         # domain size
 ):
-    C_self = autocorrelation(t)
-    max_dist = int(np.round(n / np.sqrt(2)))
+    C_self = autocorrelation(topo)
+    max_dist = int(np.round(n//np.sqrt(2)))
     C = np.zeros(max_dist + 1)
     count = np.zeros(max_dist + 1)
 
@@ -919,7 +950,7 @@ def measure_valley_dist(
             dist = np.hypot(pbc_dist(x, n), pbc_dist(y, n)).round().astype(int)
             count[dist] += 1
             C[dist] += C_self[x, y]
-    C /= count * np.square(t).sum()
+    C /= count * np.square(topo).sum()
     dist = np.arange(max_dist + 1)
     return C.sum(where=(dist > n/2)) / (max_dist - n/2)
 
@@ -1081,7 +1112,7 @@ def lamb_dipole(
     c_0 = 3.83170597020751231
     K = c_0 / radius
     C_L = - 2. * K * U / sp.j0(c_0)
-    ctr = int(n/2) - 0.5
+    ctr = n//2 - 0.5
     dist2axis = np.arange(n) - ctr
     dist2ctr = np.sqrt(np.square(dist2axis)[:, None] + np.square(dist2axis)[None, :]) * Dx
     angle = np.arctan2(dist2axis[None, :], dist2axis[:, None])
@@ -1099,7 +1130,7 @@ def find_highest_numbered_npz(
         try:
             file_number = int(file.stem[1:])
         except ValueError:
-            print(f'<{filename}.npz> does not have a valid name.')
+            print(f'<{file.name}.npz> does not have a valid name.')
             pass
         else:
             if file_number > max_number:
@@ -1121,7 +1152,7 @@ def open_folder(
         folder.mkdir()
 
 
-# @cache
+@cache
 def coordinates(
     Dx: float,  # grid spacing
     n: int,     # grid size
@@ -1129,3 +1160,9 @@ def coordinates(
     x = np.arange(0, n) * Dx
     y = np.arange(0, n) * Dx
     return np.meshgrid(x, y, indexing='ij')
+
+def integrate(
+    f:np.ndarray,   # integrand
+    Dx: float,      # grid spacing
+):
+    return np.sum(f) * Dx**2
