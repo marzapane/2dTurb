@@ -21,7 +21,7 @@ class FluidSimulator:
     rho = np.array((0, -17/60, -5/12))
     alpha = gamma + rho
     # L = [None, None, None]
-    eigs_M2 = [None, None, None]
+    eigs_M = [None, None, None]
 
     def __init__(
         self,
@@ -48,6 +48,7 @@ class FluidSimulator:
         self.reload_bak = self.confirm_reload()
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
+        
         if self.reload_bak:
             self.time = float(np.load(self.bak_dir / self.bak_file)['t'])
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'a')
@@ -123,9 +124,9 @@ class FluidSimulator:
         self.c = self.Dt * self.alpha / (self.Re * self.Dx**2)
         self.d = self.Dt * self.alpha * self.ekman
         n = np.arange(self.N)
+        cos = np.cos(2*np.pi * n/self.N)
         for i in range(3):
-            eigs_M = (1 + self.c[i] + self.d[i]/2) - self.c[i]*np.cos(2*np.pi * n/self.N)
-            self.eigs_M2[i] = np.outer(eigs_M, eigs_M[:self.N//2 + 1])
+            self.eigs_M[i] = (1 + 2*self.c[i] + self.d[i]/2) - self.c[i]*(cos[:, None] + cos[None, :self.N//2+1])
             # self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
 
     # @staticmethod
@@ -229,7 +230,7 @@ class FluidSimulator:
         i: int,
     ):
         rhs_ft = ft.rfft2(rhs)
-        inv_ft = ft.rfft2(rhs) / self.eigs_M2[i]
+        inv_ft = ft.rfft2(rhs) / self.eigs_M[i]
         return ft.irfft2(inv_ft, s=rhs.shape)
 
     def conclude(self):
@@ -242,22 +243,21 @@ class FluidSimulator:
     
 
 class FluidState:
-    from po2d_config import N, Dx
+    from po2d_config import N, Dx, f_Coriolis
 
     def __init__(
         self,
         simul = None,
-        vorticity = None,
-        f_Coriolis = 0.,
-    ):
-        self.f = f_Coriolis * np.ones((self.N, self.N))
+        pot_vorticity = None,
+        rel_vorticity = None,
+    ):        
         if simul is None:
-            self.init_vorticity(vorticity)
+            self.init_vorticity(pot_vorticity, rel_vorticity)
         else:
             if simul.reload_bak:
                 self.q = np.load(simul.bak_dir / simul.bak_file)['q']
             else:
-                self.init_vorticity(vorticity)
+                self.init_vorticity(pot_vorticity, rel_vorticity)
                 if simul.diagnostics:
                     np.savez(simul.bak_dir / f'q{0:07}', q=self.q, t=0.0)
                 if simul.plot_flag:
@@ -270,24 +270,32 @@ class FluidState:
         self.upd_J = True
         (self.v_x, self.v_y) = (None, None)
         self.upd_v = True
-        
+
     def init_vorticity(
         self,
-        vorticity,
+        pot_vorticity,
+        rel_vorticity,
     ):
-        if vorticity is not None:
-            if isinstance(vorticity, np.ndarray) and vorticity.shape == (self.N, self.N):
-                self.q = vorticity + self.f
+        if rel_vorticity is not None:
+            q = rel_vorticity + self.f_Coriolis
+            if (pot_vorticity is not None):
+                raise Exception("Error: wrong arguments: cannot set both potential and relative vorticity.")
+        else:
+            q = pot_vorticity
+
+        if q is not None:
+            if isinstance(q, np.ndarray) and q.shape == (self.N, self.N):
+                self.q = q
             else:
                 raise Exception("Error: wrong argument: q must be <numpy.ndarray> of shape (N, N).")
         else:
-            self.q = self.f
+            self.q = self.f_Coriolis
 
     def streamfunction(
         self,
     ):
         if self.upd_psi:
-            self.psi = - inv_laplacian2d(self.q - self.f, self.Dx)
+            self.psi = - inv_laplacian2d(self.q - self.f_Coriolis, self.Dx)
             self.upd_psi = False
         return self.psi
 
@@ -302,13 +310,13 @@ class FluidState:
         return self.v_x, self.v_y
     
     def vorticity(self):
-        return self.q - self.f
+        return self.q - self.f_Coriolis
 
     def dissipation(self):
         return pseudo_laplacian2d(self.vorticity())
 
     def energy(self):
-        return integrate(self.q * self.streamfunction(), self.Dx) / 2
+        return integrate(self.vorticity() * self.streamfunction(), self.Dx) / 2
 
     def casimir(
         self,
@@ -370,7 +378,7 @@ class FluidState:
         time = None,
         savepath = None,
     ):
-        lim = np.max(np.abs(self.q))
+        lim = float(np.max(np.abs(self.q)))
         # lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
         # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
@@ -380,7 +388,8 @@ class FluidState:
         fig, ax = plt.subplots()
         (x, y) = coordinates(self.Dx, self.N)
         # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
-        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=75)
+        levs = np.linspace(-lim, lim, 75)
+        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=levs)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
         ax.streamplot(x.T, y.T, *(v.T for v in self.velocity()), color=streamplt_col)
@@ -478,12 +487,14 @@ class FluidState:
 
 
 class FluidStateTopography(FluidState):
+    from po2d_config import hb_scale
+
     def __init__(
         self,
         topography: np.ndarray,
         simul = None,
-        vorticity = None,
-        f_Coriolis = 0.,
+        pot_vorticity = None,
+        rel_vorticity = None,
     ):
         if simul is None:
             self.init_topography(topography)
@@ -495,13 +506,12 @@ class FluidStateTopography(FluidState):
                 if simul.diagnostics:
                     np.save(simul.bak_dir / 'topography.npy', self.topo)
         # self.h = 1 - 2/3 * self.topo/self.topo.max()
-        self.h = 1 - self.topo/np.abs(self.topo).max() / 100.
+        self.h = 1 - self.topo/np.abs(self.topo).max() / self.hb_scale
         # gradient terms computed along diagonals, divided by h (non-linear term in q[psi])
         self.Hmd = (np.roll(np.roll(self.h, -1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, +1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
         self.Hsd = (np.roll(np.roll(self.h, +1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, -1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
 
-        super().__init__(simul, vorticity, f_Coriolis)
-        self.q /= self.h
+        super().__init__(simul, pot_vorticity, rel_vorticity)
 
     def init_topography(
         self,
@@ -512,6 +522,26 @@ class FluidStateTopography(FluidState):
         else:
             raise Exception("Error: wrong argument: topography must be <numpy.ndarray> of shape (N, N).")
 
+    def init_vorticity(
+        self,
+        pot_vorticity,
+        rel_vorticity,
+    ):
+        if rel_vorticity is not None:
+            q = (rel_vorticity + self.f_Coriolis) / self.h
+            if (pot_vorticity is not None):
+                raise Exception("Error: wrong arguments: cannot set both potential and relative vorticity.")
+        else:
+            q = pot_vorticity
+
+        if q is not None:
+            if isinstance(q, np.ndarray) and q.shape == (self.N, self.N):
+                self.q = q
+            else:
+                raise Exception("Error: wrong argument: q must be <numpy.ndarray> of shape (N, N).")
+        else:
+            self.q = self.f_Coriolis / self.h
+
     def streamfunction(
         self,
     ):
@@ -519,7 +549,7 @@ class FluidStateTopography(FluidState):
             n_iter = 0
             tol = 1e-15
             err = 1.
-            zh = (self.q*self.h - self.f) * self.h
+            zh = (self.q*self.h - self.f_Coriolis) * self.h
             if self.psi is None:
                 self.psi = -inv_laplacian2d(zh, self.Dx)
             psi_p = np.empty_like(self.psi)
@@ -544,13 +574,13 @@ class FluidStateTopography(FluidState):
         return self.v_x, self.v_y
 
     def vorticity(self):
-        return self.q*self.h - self.f
+        return self.q*self.h - self.f_Coriolis
 
     def dissipation(self):
         return pseudo_laplacian2d(self.vorticity()) / self.h
 
     def energy(self):
-        return integrate(self.q * self.streamfunction() * self.h, self.Dx) / 2
+        return integrate(self.vorticity() * self.streamfunction() * self.h, self.Dx) / 2
         # self.velocity()
         # return integrate((self.v_x**2 + self.v_y**2) * self.h, self.Dx) / 2
 
@@ -565,7 +595,7 @@ class FluidStateTopography(FluidState):
         time = None,
         savepath = None,
     ):
-        # lim = np.max(np.abs(self.q))
+        lim = float(np.max(np.abs(self.q)))
         # lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
         # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
@@ -576,7 +606,8 @@ class FluidStateTopography(FluidState):
         (x, y) = coordinates(self.Dx, self.N)
         ax.contour(x.T, y.T, self.topo.T, colors='black', alpha=0.75)
         # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
-        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=75)
+        levs = np.linspace(-lim, lim, 75)
+        contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=levs)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
         ax.streamplot(x.T, y.T, *(v.T for v in self.velocity()), color=streamplt_col)
@@ -684,10 +715,10 @@ class VorticityPlotter:
         self.im.set_data(q.T)
 
         if upd_clim and (np.count_nonzero(q) > 0):
-            # lim = float(np.max(np.abs(q)))
+            lim = float(np.max(np.abs(q)))
             # lin_thresh = np.power(10.,np.floor(np.log10(lim/10)))
             # self.im.set_norm(SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim))
-            self.im.set_norm(Normalize(vmin=q.min(), vmax=q.max()))
+            self.im.set_norm(Normalize(vmin=-lim, vmax=lim))
             self.cbar.update_normal(self.im)
 
         self.title_obj.set_text(f"Potential Vorticity | t={time:.3f}")

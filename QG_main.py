@@ -10,9 +10,9 @@ def randIC(Energy, Dx, N, topo=None):
     # q = (q - q[:, N-1::-1]) / 2
     # q = (q - q[N-1::-1, :]) / 2
     if topo is None:
-        fluid = po.FluidState(vorticity=q)
+        fluid = po.FluidState(rel_vorticity=q)
     else:
-        fluid = po.FluidStateTopography(topo, vorticity=q)
+        fluid = po.FluidStateTopography(topo, rel_vorticity=q)
     fluid.qsum20()
     fluid.streamfunction(0)
     E = fluid.energy()
@@ -27,7 +27,7 @@ def main(args):
     simul.initialize_run_state()
     topo = po.gauss_topography(simul.Dx, simul.N)
     # energy = 100.
-    # fluid = po.FluidStateTopography(topo, simul, vorticity=randIC(energy, simul.Dx, simul.N, topo))
+    # fluid = po.FluidStateTopography(topo, simul, rel_vorticity=randIC(energy, simul.Dx, simul.N, topo))
     fluid = po.FluidStateTopography(topo, simul)
         
     simul.set_physical_param(fluid)
