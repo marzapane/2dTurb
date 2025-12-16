@@ -11,4 +11,4 @@ sd_len = 2*pi # domain size
 Dx = sd_len / N
 Dt = 1 * Dx
 f_Coriolis = 0.
-hb_scale = 10.
+hb_scl = 10.

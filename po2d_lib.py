@@ -48,9 +48,17 @@ class FluidSimulator:
         self.reload_bak = self.confirm_reload()
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
-        
         if self.reload_bak:
             self.time = float(np.load(self.bak_dir / self.bak_file)['t'])
+            try:
+                self.N      = float(np.load(self.bak_dir / self.bak_file)['N'])
+                self.Re     = float(np.load(self.bak_dir / self.bak_file)['Re'])
+                self.ekman  = float(np.load(self.bak_dir / self.bak_file)['ek'])
+                self.eps    = float(np.load(self.bak_dir / self.bak_file)['eps'])
+                self.sd_len = float(np.load(self.bak_dir / self.bak_file)['sd'])
+                self.hb_scl = float(np.load(self.bak_dir / self.bak_file)['hb'])
+            except KeyError: pass
+                # print("No simulation parameter found in backup file, using po2d_config's values.")
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'a')
         else:
             self.t0 = 0
@@ -184,7 +192,17 @@ class FluidSimulator:
         if self.time >= self.T_print + self.dT_print:
             self.T_print = self.time
             if self.diagnostics:
-                np.savez(self.bak_dir / f'q{(t+self.t0):07}', q=fluid.q, t=self.time)
+                np.savez(self.bak_dir / f'q{(t+self.t0):07}',
+                         q  = fluid.q,
+                         t  = self.time,
+                         N  = self.N,
+                         Re = self.Re,
+                         ek = self.ekman,
+                         eps= self.eps,
+                         sd = self.sd_len,
+                         f  = fluid.f_Coriolis,
+                         hb = self.hb_scl
+                        )
             if self.plot_flag:
                 fig_path = self.frames_dir / f'{(t+self.t0):07}.png'
                 self.plotter.update(fluid.q, self.time, savepath=fig_path)
@@ -256,10 +274,25 @@ class FluidState:
         else:
             if simul.reload_bak:
                 self.q = np.load(simul.bak_dir / simul.bak_file)['q']
+                try:
+                    self.f_Coriolis = np.load(simul.bak_dir / simul.bak_file)['f']
+                except KeyError:
+                    print("No simulation parameter found in backup file, using po2d_config's values.")
             else:
                 self.init_vorticity(pot_vorticity, rel_vorticity)
                 if simul.diagnostics:
-                    np.savez(simul.bak_dir / f'q{0:07}', q=self.q, t=0.0)
+                    np.savez(
+                             simul.bak_dir / f'q{0:07}',
+                             q  = self.q,
+                             t  = 0.0,
+                             N  = simul.N,
+                             Re = simul.Re,
+                             ek = simul.ekman,
+                             eps= simul.eps,
+                             sd = simul.sd_len,
+                             f  = self.f_Coriolis,
+                             hb = simul.hb_scl
+                            )
                 if simul.plot_flag:
                     fig_path = simul.frames_dir / f'{0:07}.png'
                     simul.plotter.update(self.q, 0.0, savepath=fig_path)
@@ -487,7 +520,7 @@ class FluidState:
 
 
 class FluidStateTopography(FluidState):
-    from po2d_config import hb_scale
+    from po2d_config import hb_scl
 
     def __init__(
         self,
@@ -506,7 +539,7 @@ class FluidStateTopography(FluidState):
                 if simul.diagnostics:
                     np.save(simul.bak_dir / 'topography.npy', self.topo)
         # self.h = 1 - 2/3 * self.topo/self.topo.max()
-        self.h = 1 - self.topo/np.abs(self.topo).max() / self.hb_scale
+        self.h = 1 - self.topo/np.abs(self.topo).max() / self.hb_scl
         # gradient terms computed along diagonals, divided by h (non-linear term in q[psi])
         self.Hmd = (np.roll(np.roll(self.h, -1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, +1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
         self.Hsd = (np.roll(np.roll(self.h, +1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, -1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
