@@ -51,7 +51,7 @@ class FluidSimulator:
         if self.reload_bak:
             self.time = float(np.load(self.bak_dir / self.bak_file)['t'])
             try:
-                self.N      = float(np.load(self.bak_dir / self.bak_file)['N'])
+                self.N      = int(np.load(self.bak_dir / self.bak_file)['N'])
                 self.Re     = float(np.load(self.bak_dir / self.bak_file)['Re'])
                 self.ekman  = float(np.load(self.bak_dir / self.bak_file)['ek'])
                 self.eps    = float(np.load(self.bak_dir / self.bak_file)['eps'])
@@ -201,7 +201,7 @@ class FluidSimulator:
                          eps= self.eps,
                          sd = self.sd_len,
                          f  = fluid.f_Coriolis,
-                         hb = self.hb_scl
+                         hb = fluid.hb_scl
                         )
             if self.plot_flag:
                 fig_path = self.frames_dir / f'{(t+self.t0):07}.png'
@@ -261,7 +261,7 @@ class FluidSimulator:
     
 
 class FluidState:
-    from po2d_config import N, Dx, f_Coriolis
+    from po2d_config import N, Dx, f_Coriolis, hb_scl
 
     def __init__(
         self,
@@ -291,7 +291,7 @@ class FluidState:
                              eps= simul.eps,
                              sd = simul.sd_len,
                              f  = self.f_Coriolis,
-                             hb = simul.hb_scl
+                             hb = self.hb_scl
                             )
                 if simul.plot_flag:
                     fig_path = simul.frames_dir / f'{0:07}.png'
