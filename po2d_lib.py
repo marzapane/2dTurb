@@ -799,6 +799,37 @@ def energy_spectrum(
     return (2*np.pi)**3 * np.arange(k_max) * spectrum
 
 
+@cache
+def zero_forcing(
+    n: int,     # grid size
+    trg_eps = None,
+):
+    return np.zeros((n, n))
+
+
+def random_scalefree_field(
+    n: int,     # grid size
+    energy = 1.,
+):
+    power_spectrum = np.sqrt(energy) * scalefree_spectrum(n)
+    random_phase = np.random.rand(n, n//2+1)
+    F_ft = power_spectrum * np.exp(2j*np.pi * random_phase)
+    return ft.irfft2(F_ft, norm='ortho', s=(n,n)) * n/(2*np.pi)
+
+
+@cache
+def scalefree_spectrum(
+    n: int,     # grid size
+):
+    k = modulus_k(n)
+    with np.errstate(divide='ignore'):
+        f2 = np.power(k, -2) / (2*np.pi * k)
+    f2[k==0.] = 0.
+    norm = f2.sum()
+    f2[:, 1:-1] /= 2
+    return np.sqrt(f2 / norm)
+
+
 def random_forcing(
     n: int,     # grid size
     trg_eps = 1.,
@@ -833,14 +864,6 @@ def modulus_k(
     kx[n//2+1:n] = kx[n-n//2-1:0:-1]
     ky = np.arange(n//2+1)
     return np.sqrt(kx[:,None]**2+ky[None,:]**2)
-
-
-@cache
-def zero_forcing(
-    n: int,     # grid size
-    trg_eps = None,
-):
-    return np.zeros((n, n))
 
 
 def gauss_topography(
