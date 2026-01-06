@@ -268,7 +268,10 @@ class FluidState:
         simul = None,
         pot_vorticity = None,
         rel_vorticity = None,
-    ):        
+        f_Coriolis = None,
+    ):
+        if f_Coriolis is not None:
+            self.f_Coriolis = f_Coriolis
         if simul is None:
             self.init_vorticity(pot_vorticity, rel_vorticity)
         else:
@@ -410,18 +413,25 @@ class FluidState:
         self,
         time = None,
         savepath = None,
+        col_map = None,
+        streamplt_col='purple',
     ):
-        lim = float(np.max(np.abs(self.q)))
+        if col_map is None:
+            col_map = cm.BrBG_r
+            lim = np.max(np.abs(self.q))
+            qmax = lim
+            qmin = -lim
+        else:
+            qmax = np.max(self.q)
+            qmin = np.min(self.q)
         # lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
         # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
-        col_map = cm.BrBG_r
-        streamplt_col='purple'
         
         fig, ax = plt.subplots()
         (x, y) = coordinates(self.Dx, self.N)
         # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
-        levs = np.linspace(-lim, lim, 75)
+        levs = np.linspace(qmin, qmax, 75)
         contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=levs)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
@@ -520,14 +530,13 @@ class FluidState:
 
 
 class FluidStateTopography(FluidState):
-    from po2d_config import hb_scl
-
     def __init__(
         self,
         topography: np.ndarray,
         simul = None,
         pot_vorticity = None,
         rel_vorticity = None,
+        f_Coriolis = None,
     ):
         if simul is None:
             self.init_topography(topography)
@@ -544,7 +553,7 @@ class FluidStateTopography(FluidState):
         self.Hmd = (np.roll(np.roll(self.h, -1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, +1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
         self.Hsd = (np.roll(np.roll(self.h, +1, axis=0), -1, axis=1) - np.roll(np.roll(self.h, -1, axis=0), +1, axis=1)) / (8*self.Dx**2 * self.h)
 
-        super().__init__(simul, pot_vorticity, rel_vorticity)
+        super().__init__(simul, pot_vorticity, rel_vorticity, f_Coriolis)
 
     def init_topography(
         self,
@@ -627,20 +636,27 @@ class FluidStateTopography(FluidState):
         self,
         time = None,
         savepath = None,
+        col_map = None,
+        streamplt_col='purple',
     ):
-        lim = float(np.max(np.abs(self.q)))
-        # lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
-        # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
-        col_map = cm.BrBG_r
-        streamplt_col='purple'
         
         fig, ax = plt.subplots()
         (x, y) = coordinates(self.Dx, self.N)
         ax.contour(x.T, y.T, self.topo.T, colors='black', alpha=0.75)
-        # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
-        levs = np.linspace(-lim, lim, 75)
+        if col_map is None:
+            col_map = cm.BrBG_r
+            lim = np.max(np.abs(self.q))
+            qmax = lim
+            qmin = -lim
+        else:
+            qmax = np.max(self.q)
+            qmin = np.min(self.q)
+        # lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
+        # log_norm = SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
+        levs = np.linspace(qmin, qmax, 75)
         contour_plt = ax.contourf(x.T, y.T, self.q.T, cmap=col_map, levels=levs)
+        # contour_plt = ax.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
         cbar = fig.colorbar(contour_plt, ax=ax)
         
         ax.streamplot(x.T, y.T, *(v.T for v in self.velocity()), color=streamplt_col)
