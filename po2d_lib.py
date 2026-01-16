@@ -3,7 +3,6 @@ import numpy.fft as ft
 import numpy.linalg as la
 import scipy.special as sp
 import matplotlib.pyplot as plt
-from functools import cache
 from tqdm import tqdm
 from matplotlib import cm
 from matplotlib.colors import SymLogNorm, Normalize
@@ -11,7 +10,12 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from scipy.stats import binned_statistic
 from scipy.ndimage import gaussian_filter
 from pathlib import Path
-
+try:
+    from functools import cache
+except ImportError:
+    # Fallback: Define a decorator that does nothing
+    def cache(func):
+        return func
 
 class FluidSimulator:
     from po2d_config import T, N, Re, ekman, eps, cfg_name, sd_len, Dx, Dt
