@@ -233,7 +233,7 @@ class FluidSimulator:
         step: int,
     ):
         F_p = self.F.copy()
-        self.F = self.forcing(self.N, self.eps)
+        self.F = self.forcing(self.N, trg_eps=self.eps, Dt=self.Dt)
         J_p = fluid.J.copy()
         fluid.arakawa_jacobian()
         rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*fluid.dissipation()
@@ -802,7 +802,7 @@ def energy_spectrum(
 @cache
 def zero_forcing(
     n: int,     # grid size
-    trg_eps = None,
+    **kwargs,
 ):
     return np.zeros((n, n))
 
@@ -810,6 +810,7 @@ def zero_forcing(
 def random_scalefree_field(
     n: int,     # grid size
     energy = 1.,
+    **kwargs,
 ):
     power_spectrum = np.sqrt(energy) * scalefree_spectrum(n)
     random_phase = np.random.rand(n, n//2+1)
@@ -832,13 +833,14 @@ def scalefree_spectrum(
 
 def random_forcing(
     n: int,     # grid size
+    Dt,
     trg_eps = 1.,
 ):
     k_F = 50. if n > 256 else 25.
     power_spectrum = vorticity_forcing_spectrum(trg_eps, k_F, n)
     random_phase = np.random.rand(n, n//2+1)
     F_ft = power_spectrum * np.exp(2j*np.pi * random_phase)
-    return ft.irfft2(F_ft, norm='ortho', s=(n,n)) * n/(2*np.pi)
+    return ft.irfft2(F_ft, norm='ortho', s=(n,n)) * n/(2*np.pi) / np.sqrt(Dt)
 
 
 @cache
@@ -1198,7 +1200,8 @@ def state_diff(f, g):
     alpha = optimal_rescale(f, g)
     if alpha is not None:
         print(f'The relative difference between states is {np.abs(alpha*f - g).sum() / np.abs(g).sum()}.')
-        plt.contourf(alpha*f.T - g.T, levels=50)
+        max_diff = np.abs(alpha*f - g).max()
+        plt.contourf((alpha*f.T - g.T)/max_diff, levels=np.linspace(-1,1,50))
         plt.colorbar()
         plt.show()
     else:
