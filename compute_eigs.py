@@ -1,5 +1,6 @@
-#!/usr/bin/env python
+#!/opt/intel/oneapi/intelpython/latest/bin/python
 
+import argparse
 from po2d_config import *
 from po2d_lib import *
 import numpy as np
@@ -84,7 +85,7 @@ def refine_eigenpair(
         print('Result got worse. Returning old values')
         return eig, v, residual
 
-def main():
+def main(symmetrize):
     # setup q[] = 1/h^2 [1/h grad(h).grad - Lap]
     topo = gauss_topography(Dx, N)
     h = 1 + 2/3 * topo/topo.max()
@@ -100,39 +101,39 @@ def main():
     q_of_psi = dx.multiply(H1[:, None]) + dy.multiply(H2[:, None]) - lap.multiply(Ih[:, None])
 
     # compute eigenvalues and eigenvectors
-    eigs, eigv = sla.eigs(q_of_psi, N, which='SM', tol=0)
+    eigs, eigv = sla.eigs(q_of_psi, min(N//2+1, 65), which='SM', tol=0)
 
     # sort and store them
     sort_idx = np.argsort(eigs)
     eigs = eigs[sort_idx]
     eigv = eigv[:, sort_idx].T
-    eigs.sort()
     lst_eigv = []
     for f in eigv:
         lst_eigv.append(f.reshape(N, N))
     eigv = np.asarray(lst_eigv).real
 
-    # symmetrize states in larger than 1d eigenspaces
-    tol = 1e-10
-    i = 0
-    while i < len(eigs):
-        deg_eig = [i]
-        j = i + 1
-        while j < len(eigs) and abs(eigs[j] - eigs[i]) < tol:
-            deg_eig.append(j)
-            j += 1
-        if len(deg_eig) > 1:
-            print(f"Degenerate group found for eigenvalue {eigs[i]:.6f}: Indices {deg_eig}")
-            if len(deg_eig) == 2:
-                qsym = (eigv[i] + eigv[i].T)/2
-                # eig, qsym, res = refine_eigenpair(q_of_psi, eigs[i], qsym.flatten())
-                eigv[i+1] = qsym.reshape(N,N)
-                qsym = (eigv[i] - eigv[i].T)/2
-                # eig, qsym, res = refine_eigenpair(q_of_psi, eigs[i], qsym.flatten())
-                eigv[i] = qsym.reshape(N,N)
-            else:
-                print("Eigenspace too large for symmetries")
-        i = j
+    if (symmetrize):
+        # symmetrize states in larger than 1d eigenspaces
+        tol = 1e-10
+        i = 0
+        while i < len(eigs):
+            deg_eig = [i]
+            j = i + 1
+            while j < len(eigs) and abs(eigs[j] - eigs[i]) < tol:
+                deg_eig.append(j)
+                j += 1
+            if len(deg_eig) > 1:
+                print(f"Degenerate group found for eigenvalue {eigs[i]:.6f}: Indices {deg_eig}")
+                if len(deg_eig) == 2:
+                    qsym = (eigv[i] + eigv[i].T)/2
+                    # eig, qsym, res = refine_eigenpair(q_of_psi, eigs[i], qsym.flatten())
+                    eigv[i+1] = qsym.reshape(N,N)
+                    qsym = (eigv[i] - eigv[i].T)/2
+                    # eig, qsym, res = refine_eigenpair(q_of_psi, eigs[i], qsym.flatten())
+                    eigv[i] = qsym.reshape(N,N)
+                else:
+                    print("Eigenspace too large for symmetries")
+            i = j
         
     # fix zero sum for rotationally symmetric states
     for i in range(1, len(eigs)):
@@ -141,8 +142,8 @@ def main():
 
     # rescale energy to 1
     for i in range(1, len(eigv)):
-        fluid = FluidStateTopography(vorticity=eigv[i], topography=topo)
-        fluid.streamfunction(0)
+        fluid = FluidStateTopography(pot_vorticity=eigv[i], topography=topo)
+        fluid.streamfunction()
         E = fluid.energy()
         eigv[i] = eigv[i] / np.sqrt(E)
 
@@ -152,4 +153,6 @@ def main():
     print_symmetries(eigv, h)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Compute lowest eigenstates of q(psi).")
+    parser.add_argument("--sym", action="store_true", default=False, help="Symmetrize eigenstates")
+    main(parser.parse_args().sym)
