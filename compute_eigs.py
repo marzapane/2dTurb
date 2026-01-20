@@ -88,7 +88,7 @@ def refine_eigenpair(
 def main(symmetrize):
     # setup q[] = 1/h^2 [1/h grad(h).grad - Lap]
     topo = gauss_topography(Dx, N)
-    h = 1 + 2/3 * topo/topo.max()
+    h = 1 - topo/topo.max() / hb_scl
     dx_h = derivative(h, 0, Dx)
     dy_h = derivative(h, 1, Dx)
     H1 = (dx_h / np.power(h, 3)).flatten()
