@@ -196,7 +196,7 @@ class FluidSimulator:
         if self.time >= self.T_print + self.dT_print:
             self.T_print = self.time
             if self.diagnostics:
-                np.savez(self.bak_dir / f'q{(t+self.t0):07}',
+                np.savez(self.bak_dir / f'q{(t+self.t0):08}',
                          q  = fluid.q,
                          t  = self.time,
                          N  = self.N,
@@ -208,7 +208,7 @@ class FluidSimulator:
                          hb = fluid.hb_scl
                         )
             if self.plot_flag:
-                fig_path = self.frames_dir / f'{(t+self.t0):07}.png'
+                fig_path = self.frames_dir / f'{(t+self.t0):08}.png'
                 self.plotter.update(fluid.q, self.time, savepath=fig_path)
                 # fluid.plot_field(self, self.time, savepath=fig_path)
         if self.analize_vortex:
@@ -289,7 +289,7 @@ class FluidState:
                 self.init_vorticity(pot_vorticity, rel_vorticity)
                 if simul.diagnostics:
                     np.savez(
-                             simul.bak_dir / f'q{0:07}',
+                             simul.bak_dir / f'q{0:08}',
                              q  = self.q,
                              t  = 0.0,
                              N  = simul.N,
@@ -301,7 +301,7 @@ class FluidState:
                              hb = self.hb_scl
                             )
                 if simul.plot_flag:
-                    fig_path = simul.frames_dir / f'{0:07}.png'
+                    fig_path = simul.frames_dir / f'{0:08}.png'
                     simul.plotter.update(self.q, 0.0, savepath=fig_path)
 
         self.psi = None
