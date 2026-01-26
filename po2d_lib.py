@@ -769,6 +769,7 @@ class VorticityPlotter:
 
         if upd_clim and (np.count_nonzero(q) > 0):
             lim = float(np.max(np.abs(q)))
+            lim = np.ceil(lim/3)*3
             # lin_thresh = np.power(10.,np.floor(np.log10(lim/10)))
             # self.im.set_norm(SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim))
             self.im.set_norm(Normalize(vmin=-lim, vmax=lim))
