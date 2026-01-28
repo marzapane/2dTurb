@@ -48,19 +48,20 @@ class FluidSimulator:
         self.diagnostics = True
         print(f'Running simulation "{self.cfg_name}"')
         self.frames_dir, self.bak_dir = self.setup_folders() # looking for past simulations backup files
-        self.bak_file, self.t0 = find_highest_numbered_npz(self.bak_dir)
+        self.bak_file = find_q(self.bak_dir)
         self.reload_bak = self.confirm_reload()
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
         if self.reload_bak:
-            self.time = float(np.load(self.bak_dir / self.bak_file)['t'])
+            self.t0 = int(self.bak_file.stem[1:])
+            self.time = float(np.load(self.bak_file)['t'])
             try:
-                self.N      = int(np.load(self.bak_dir / self.bak_file)['N'])
-                self.Re     = float(np.load(self.bak_dir / self.bak_file)['Re'])
-                self.ekman  = float(np.load(self.bak_dir / self.bak_file)['ek'])
-                self.eps    = float(np.load(self.bak_dir / self.bak_file)['eps'])
-                self.sd_len = float(np.load(self.bak_dir / self.bak_file)['sd'])
-                self.hb_scl = float(np.load(self.bak_dir / self.bak_file)['hb'])
+                self.N      = int(np.load(self.bak_file)['N'])
+                self.Re     = float(np.load(self.bak_file)['Re'])
+                self.ekman  = float(np.load(self.bak_file)['ek'])
+                self.eps    = float(np.load(self.bak_file)['eps'])
+                self.sd_len = float(np.load(self.bak_file)['sd'])
+                self.hb_scl = float(np.load(self.bak_file)['hb'])
             except KeyError: pass
                 # print("No simulation parameter found in backup file, using po2d_config's values.")
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'a')
@@ -87,9 +88,9 @@ class FluidSimulator:
 
     def confirm_reload(self):   # returns the answer to "Restart past simulation?"
         if self.bak_file:   # asking user confirmation to reload last simulation (default)
-            print(f'A previous simulation has been found: {self.bak_file}.')
+            print(f'A previous simulation has been found: {self.bak_file.name}.')
             if self.silent:
-                print(f'Restarting past simulation from t0={self.t0}.')
+                print(f'Restarting past simulation from t0={self.bak_file.stem[1:]}.')
                 return True
             else:
                 print('Starting a different one will overwrite it.')
@@ -98,7 +99,7 @@ class FluidSimulator:
                     print('Launching a new simulation and overwriting the past one.')
                     return False
                 else:
-                    print(f'Restarting past simulation from t0={self.t0}.')
+                    print(f'Restarting past simulation from t0={self.bak_file.stem[1:]}.')
                     return True
         else:
             print('No previous simulation was found; launching a new one.')
@@ -280,9 +281,9 @@ class FluidState:
             self.init_vorticity(pot_vorticity, rel_vorticity)
         else:
             if simul.reload_bak:
-                self.q = np.load(simul.bak_dir / simul.bak_file)['q']
+                self.q = np.load(simul.bak_file)['q']
                 try:
-                    self.f_Coriolis = np.load(simul.bak_dir / simul.bak_file)['f']
+                    self.f_Coriolis = np.load(simul.bak_file)['f']
                 except KeyError:
                     print("No simulation parameter found in backup file, using po2d_config's values.")
             else:
@@ -1232,22 +1233,16 @@ def lamb_dipole(
     return dipole
 
 
-def find_highest_numbered_npz(
+def find_q(
     directory,
+    idx=-1,
 ):
-    max_number = -1
-    max_file = None
-    for file in directory.glob('q*.npz'):
-        try:
-            file_number = int(file.stem[1:])
-        except ValueError:
-            print(f'<{file.name}.npz> does not have a valid name.')
-            pass
-        else:
-            if file_number > max_number:
-                max_number = file_number
-                max_file = file.name
-    return max_file, max_number
+    q_files = sorted(directory.glob('q*.npz'),
+                        key = lambda path: int(path.stem[1:])
+                    )
+    if not q_files:
+        return None
+    return q_files[idx]
 
 
 def open_folder(
