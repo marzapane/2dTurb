@@ -65,7 +65,7 @@ def test_lamb_dipole():
     simul.T = 200
     simul.t0 = 0
     simul.time = 0.
-    fluid = po.FluidState(vorticity = po.lamb_dipole(Dx, N))
+    fluid = po.FluidState(pot_vorticity = po.lamb_dipole(Dx, N), f_Coriolis=0)
     simul.set_physical_param(fluid)
     for t in simul.time_exec:
         simul.advance_dt(fluid, t)
@@ -74,9 +74,9 @@ def test_lamb_dipole():
 def test_find_center():
     (x, y) = po.coordinates(Dx, N)
     q = (np.exp(-(x-3)**2-(y-2)**2) - np.exp(-(x-1)**2-(y-3.5)**2)) * (5 + np.random.rand(N,N))
-    fluid = po.FluidState(vorticity = q)
-    fluid.streamfunction(0)
-    fluid.velocity(0)
+    fluid = po.FluidState(pot_vorticity = q, f_Coriolis=0)
+    fluid.streamfunction()
+    fluid.velocity()
     pos_vortex_ctr = fluid.find_vortex_center()
     nearest_pos_ctr = np.around(pos_vortex_ctr / (2*np.pi/N)).astype(int)
     q_pos_ctr = q[tuple(nearest_pos_ctr)]
@@ -103,9 +103,9 @@ def test_find_center():
 def test_avg_vorticity():
     (x, y) = po.coordinates(Dx, N)
     q = (np.exp(-(x-3.1)**2-(y-2.03)**2) - np.exp(-(x-1.06)**2-(y-3.5)**2)) * (10 + np.random.rand(N,N))
-    fluid = po.FluidState(vorticity = q)
-    fluid.streamfunction(0)
-    fluid.velocity(0)
+    fluid = po.FluidState(pot_vorticity = q, f_Coriolis=0)
+    fluid.streamfunction()
+    fluid.velocity()
     bins = np.arange(int(N/2 * np.sqrt(2))+1) * Dx
     omega_pos = fluid.avg_centered_field(bins)
     omega_neg = (-fluid).avg_centered_field(bins)
@@ -135,8 +135,8 @@ def test_streamfunction():
     rand_ph = np.random.rand(4)
     x = 2*np.pi * np.arange(N)/N
     q = np.sin(x * rand_om[0] + rand_ph[0])[:, None] * np.sin(x * rand_om[1] + rand_ph[1])[None, :] + np.sin(x * rand_om[2] + rand_ph[2])[:, None] * np.sin(x * rand_om[3] + rand_ph[3])[None, :]
-    fluid = po.FluidStateTopography(topo, vorticity=q)
-    fluid.streamfunction(0)
+    fluid = po.FluidStateTopography(topo, pot_vorticity=q, f_Coriolis=0)
+    fluid.streamfunction()
     Hpsi = fluid.Hmd * (np.roll(np.roll(fluid.psi, -1, axis=0), -1, axis=1) - np.roll(np.roll(fluid.psi, +1, axis=0), +1, axis=1)) + fluid.Hsd * (np.roll(np.roll(fluid.psi, +1, axis=0), -1, axis=1) - np.roll(np.roll(fluid.psi, -1, axis=0), +1, axis=1))
     q_bar = (Hpsi - po.pseudo_laplacian2d(fluid.psi) / (fluid.Dx**2)) / np.square(fluid.h)
     err = abs(q_bar - fluid.q).max()/(np.abs(fluid.q).max() + 1e-9)
@@ -149,7 +149,8 @@ def test_streamfunction():
         raise Exception('Error: problem in reconstructing q.')
     psi_bar = fluid.psi
     fluid.q = q_bar
-    fluid.streamfunction(1)
+    fluid.upd_psi = True
+    fluid.streamfunction()
     err = abs(psi_bar - fluid.psi).max() / (np.abs(psi_bar).max() + 1e-9)
     if err > 1e-14:
         print(f'--> relative error on psi reconstruction: {err}')
