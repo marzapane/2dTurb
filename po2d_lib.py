@@ -52,7 +52,7 @@ class FluidSimulator:
         self.reload_bak = self.confirm_reload()
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
-        if self.reload_bak:
+        if self.reload_bak and self.bak_file:
             self.t0 = int(self.bak_file.stem[1:])
             self.time = float(np.load(self.bak_file)['t'])
             try:
@@ -770,7 +770,8 @@ class VorticityPlotter:
 
         if upd_clim and (np.count_nonzero(q) > 0):
             lim = float(np.max(np.abs(q)))
-            lim = np.ceil(lim/3)*3
+            p10lim = np.power(10, np.floor(np.log10(lim)))
+            lim = np.ceil(lim/p10lim)*p10lim
             # lin_thresh = np.power(10.,np.floor(np.log10(lim/10)))
             # self.im.set_norm(SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim))
             self.im.set_norm(Normalize(vmin=-lim, vmax=lim))
@@ -808,7 +809,7 @@ def energy_spectrum(
 @cache
 def zero_forcing(
     n: int,     # grid size
-    **kwargs,
+    *args,**kwargs,
 ):
     return np.zeros((n, n))
 
@@ -816,7 +817,7 @@ def zero_forcing(
 def random_scalefree_field(
     n: int,     # grid size
     energy = 1.,
-    **kwargs,
+    *args,**kwargs,
 ):
     power_spectrum = np.sqrt(energy) * scalefree_spectrum(n)
     random_phase = np.random.rand(n, n//2+1)
